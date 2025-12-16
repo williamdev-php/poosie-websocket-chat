@@ -1,0 +1,46 @@
+[
+  {
+    "id": "sess_20251216201753_3e588aca",
+    "user_id": 1,
+    "ip_address": "127.0.0.1",
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "browser": "Chrome",
+    "os": "Linux",
+    "device_type": "desktop",
+    "timestamp": "2025-12-16T20:17:53.901038",
+    "fingerprint": "3e588aca16d3ed0c"
+  },
+  {
+    "id": "sess_20251216202138_3e588aca",
+    "user_id": 1,
+    "ip_address": "127.0.0.1",
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "browser": "Chrome",
+    "os": "Linux",
+    "device_type": "desktop",
+    "timestamp": "2025-12-16T20:21:38.697836",
+    "fingerprint": "3e588aca16d3ed0c"
+  },
+  {
+    "id": "sess_20251216202624_0e694728",
+    "user_id": 1,
+    "ip_address": "127.0.0.1",
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "browser": "Chrome",
+    "os": "Linux",
+    "device_type": "desktop",
+    "timestamp": "2025-12-16T20:26:24.138821",
+    "fingerprint": "0e694728e63139bd"
+  },
+  {
+    "id": "sess_20251216203328_0e694728",
+    "user_id": 1,
+    "ip_address": "127.0.0.1",
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "browser": "Chrome",
+    "os": "Linux",
+    "device_type": "desktop",
+    "timestamp": "2025-12-16T20:33:28.789862",
+    "fingerprint": "0e694728e63139bd"
+  }
+]

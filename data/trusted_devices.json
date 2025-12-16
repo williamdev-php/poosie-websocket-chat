@@ -1,0 +1,20 @@
+{
+  "0e694728e63139bd": {
+    "fingerprint": "0e694728e63139bd",
+    "ip_address": "127.0.0.1",
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "status": "trusted",
+    "marked_by": 2,
+    "marked_at": "2025-12-16T20:27:31.542045",
+    "note": null
+  },
+  "3e588aca16d3ed0c": {
+    "fingerprint": "3e588aca16d3ed0c",
+    "ip_address": "127.0.0.1",
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "status": "trusted",
+    "marked_by": 2,
+    "marked_at": "2025-12-16T20:27:40.703640",
+    "note": null
+  }
+}
