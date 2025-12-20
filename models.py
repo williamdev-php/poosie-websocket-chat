@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict
 from datetime import datetime
 from enum import Enum
 
@@ -27,11 +27,16 @@ USERS = {
     2: {"id": 2, "name": "noosie"}
 }
 
+class EncryptedContent(BaseModel):
+    """Krypterat innehåll med salt"""
+    encrypted: str
+    salt: str
+
 class Message(BaseModel):
     id: str
     sender_id: int
     receiver_id: int
-    content: str  # Krypterat innehåll
+    content: EncryptedContent  # Krypterat innehåll med salt
     message_type: MessageType
     status: MessageStatus = MessageStatus.SENT
     created_at: datetime
@@ -62,7 +67,9 @@ class WebSocketMessage(BaseModel):
         "user_connected",    # Användare anslöt
         "user_disconnected", # Användare frånkopplad
         "message_deleted",   # Meddelande raderat
-        "session_full"       # Sessionen är full
+        "session_full",      # Sessionen är full
+        "security_breach",   # 🚨 NYTT: Säkerhetsbrist (dubbel inloggning)
+        "duplicate_connection"  # 🚨 NYTT: Duplicate WebSocket connection
     ]
     data: dict
 
@@ -72,8 +79,28 @@ class OutgoingMessage(BaseModel):
     sender_id: int
     sender_name: str
     receiver_id: int
-    content: str  # Dekrypterat för mottagaren
+    content: EncryptedContent  # Krypterat - frontend dekrypterar
     message_type: MessageType
     status: MessageStatus
     created_at: str
     char_count: int
+
+# JWT Models
+class TokenPayload(BaseModel):
+    user_id: int
+    exp: datetime
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int  # seconds
+
+class LoginRequest(BaseModel):
+    user_id: int
+    # I framtiden kan man lägga till password här
+
+class LastSeenResponse(BaseModel):
+    user_id: int
+    last_seen_at: str
+    last_seen_ago: str  # "2 timmar sedan"
+    is_online: bool = False

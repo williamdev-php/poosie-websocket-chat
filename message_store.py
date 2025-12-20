@@ -1,30 +1,28 @@
-import os
 import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Callable
 from collections import OrderedDict
 import uuid
-from dotenv import load_dotenv
-from models import Message, MessageStatus, MessageType, UserSession, UserStatus, USERS
-from encryption import encrypt_message, decrypt_message
-
-load_dotenv()
+from models import Message, MessageStatus, MessageType, UserSession, UserStatus, USERS, EncryptedContent
+from encryption import encryption
+from config import config
 
 class MessageStore:
     """
     RAM-baserad meddelandelagring med automatisk radering.
     Använder OrderedDict för effektiv minneshantering.
+    All data krypteras med unika salts.
     """
     
     def __init__(self):
-        # Konfiguration från .env
-        self.base_delete_time = int(os.getenv("BASE_DELETE_TIME_SECONDS", 30))
-        self.time_per_char = float(os.getenv("TIME_PER_CHARACTER_SECONDS", 0.5))
-        self.max_lifetime = int(os.getenv("MAX_MESSAGE_LIFETIME_SECONDS", 300))
-        self.cleanup_interval = int(os.getenv("CLEANUP_INTERVAL_SECONDS", 5))
-        self.inactivity_timeout = int(os.getenv("INACTIVITY_TIMEOUT_SECONDS", 30))
+        # Konfiguration från config
+        self.base_delete_time = config.BASE_DELETE_TIME_SECONDS
+        self.time_per_char = config.TIME_PER_CHARACTER_SECONDS
+        self.max_lifetime = config.MAX_MESSAGE_LIFETIME_SECONDS
+        self.cleanup_interval = config.CLEANUP_INTERVAL_SECONDS
+        self.inactivity_timeout = config.INACTIVITY_TIMEOUT_SECONDS
         
-        # Meddelandelagring - OrderedDict för FIFO och effektiv radering
+        # Meddelandelagring - OrderedDict för FIFO
         self._messages: OrderedDict[str, Message] = OrderedDict()
         
         # Användarsessioner
@@ -38,11 +36,10 @@ class MessageStore:
         self._cleanup_task: Optional[asyncio.Task] = None
         self._running = False
         
-        print(f"📦 MessageStore initierad:")
+        print(f"📦 MessageStore initierad (krypterad):")
         print(f"   - Bas raderingstid: {self.base_delete_time}s")
         print(f"   - Tid per tecken: {self.time_per_char}s")
         print(f"   - Max livstid: {self.max_lifetime}s")
-        print(f"   - Cleanup interval: {self.cleanup_interval}s")
     
     def set_callbacks(self, on_deleted: Callable, on_status: Callable):
         """Sätt callbacks för händelser"""
@@ -55,7 +52,7 @@ class MessageStore:
             return
         self._running = True
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-        print("🧹 Cleanup task startad")
+        print("🧹 Message cleanup task startad")
     
     async def stop_cleanup_task(self):
         """Stoppa bakgrundsuppgiften"""
@@ -66,7 +63,7 @@ class MessageStore:
                 await self._cleanup_task
             except asyncio.CancelledError:
                 pass
-        print("🛑 Cleanup task stoppad")
+        print("🛑 Message cleanup task stoppad")
     
     async def _cleanup_loop(self):
         """Loop som regelbundet rensar utgångna meddelanden"""
@@ -121,12 +118,13 @@ class MessageStore:
         content: str,
         message_type: MessageType = MessageType.TEXT
     ) -> Message:
-        """Lägg till ett nytt meddelande"""
+        """Lägg till ett nytt meddelande (krypterat)"""
         # Räkna tecken innan kryptering
         char_count = len(content)
         
-        # Kryptera innehållet
-        encrypted_content = encrypt_message(content)
+        # Kryptera innehållet med unikt salt
+        encrypted_data = encryption.encrypt_message(content)
+        encrypted_content = EncryptedContent(**encrypted_data)
         
         msg = Message(
             id=str(uuid.uuid4()),
@@ -140,7 +138,7 @@ class MessageStore:
         )
         
         self._messages[msg.id] = msg
-        print(f"📨 Meddelande {msg.id[:8]}... sparat ({char_count} tecken)")
+        print(f"📨 Meddelande {msg.id[:8]}... sparat (krypterat, {char_count} tecken)")
         return msg
     
     def get_message(self, message_id: str) -> Optional[Message]:
@@ -151,7 +149,10 @@ class MessageStore:
         """Hämta dekrypterat innehåll för ett meddelande"""
         msg = self._messages.get(message_id)
         if msg:
-            return decrypt_message(msg.content)
+            return encryption.decrypt_message({
+                "encrypted": msg.content.encrypted,
+                "salt": msg.content.salt
+            })
         return None
     
     def mark_as_delivered(self, message_id: str) -> bool:
@@ -177,20 +178,27 @@ class MessageStore:
         return None
     
     def get_messages_for_user(self, user_id: int) -> List[dict]:
-        """Hämta alla meddelanden för en användare (dekrypterade)"""
+        """Hämta alla meddelanden för en användare (DEKRYPTERADE)"""
         messages = []
         for msg in self._messages.values():
             if msg.sender_id == user_id or msg.receiver_id == user_id:
+                # ✅ FIXAT: Dekryptera innehållet innan vi returnerar
+                decrypted_content = encryption.decrypt_message({
+                    "encrypted": msg.content.encrypted,
+                    "salt": msg.content.salt
+                })
+                
                 messages.append({
                     "id": msg.id,
                     "sender_id": msg.sender_id,
                     "sender_name": USERS.get(msg.sender_id, {}).get("name", "unknown"),
                     "receiver_id": msg.receiver_id,
-                    "content": decrypt_message(msg.content),
+                    "content": decrypted_content,  # ✅ Dekrypterat innehåll
                     "message_type": msg.message_type.value,
                     "status": msg.status.value,
                     "created_at": msg.created_at.isoformat(),
-                    "char_count": msg.char_count
+                    "char_count": msg.char_count,
+                    "delete_at": msg.delete_at.isoformat() if msg.delete_at else None
                 })
         return messages
     
