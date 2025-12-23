@@ -10,7 +10,7 @@ from config import config
 class MessageStore:
     """
     RAM-baserad meddelandelagring med automatisk radering.
-    Använder OrderedDict för effektiv minneshantering.
+    Använder FIFO-kö för meddelanden så att de raderas i ordning.
     All data krypteras med unika salts.
     """
     
@@ -25,6 +25,9 @@ class MessageStore:
         # Meddelandelagring - OrderedDict för FIFO
         self._messages: OrderedDict[str, Message] = OrderedDict()
         
+        # 🆕 FIFO Deletion Queue - meddelanden som väntar på radering
+        self._deletion_queue: List[str] = []  # Lista med message IDs i ordning
+        
         # Användarsessioner
         self._sessions: Dict[int, UserSession] = {}
         
@@ -36,7 +39,7 @@ class MessageStore:
         self._cleanup_task: Optional[asyncio.Task] = None
         self._running = False
         
-        print(f"📦 MessageStore initierad (krypterad):")
+        print(f"📦 MessageStore initierad (krypterad + FIFO-kö):")
         print(f"   - Bas raderingstid: {self.base_delete_time}s")
         print(f"   - Tid per tecken: {self.time_per_char}s")
         print(f"   - Max livstid: {self.max_lifetime}s")
@@ -69,7 +72,7 @@ class MessageStore:
         """Loop som regelbundet rensar utgångna meddelanden"""
         while self._running:
             try:
-                await self._cleanup_expired_messages()
+                await self._process_deletion_queue()
                 await self._check_inactive_users()
                 await asyncio.sleep(self.cleanup_interval)
             except asyncio.CancelledError:
@@ -78,20 +81,42 @@ class MessageStore:
                 print(f"❌ Cleanup fel: {e}")
                 await asyncio.sleep(self.cleanup_interval)
     
-    async def _cleanup_expired_messages(self):
-        """Radera meddelanden som har passerat sin delete_at tid"""
+    async def _process_deletion_queue(self):
+        """
+        🆕 FIFO Deletion Queue Processing
+        Radera meddelanden i ordning (först in, först ut)
+        """
         now = datetime.utcnow()
-        to_delete = []
+        deleted_count = 0
         
-        for msg_id, msg in self._messages.items():
+        # Processa kön från början
+        while self._deletion_queue:
+            msg_id = self._deletion_queue[0]  # Kolla första meddelandet
+            msg = self._messages.get(msg_id)
+            
+            if not msg:
+                # Meddelandet finns inte längre, ta bort från kö
+                self._deletion_queue.pop(0)
+                continue
+            
+            # Kolla om det är dags att radera
             if msg.delete_at and now >= msg.delete_at:
-                to_delete.append(msg_id)
+                # Radera meddelandet
+                self._messages.pop(msg_id, None)
+                self._deletion_queue.pop(0)
+                deleted_count += 1
+                
+                if self._on_message_deleted:
+                    await self._on_message_deleted(msg_id, msg.sender_id, msg.receiver_id)
+                
+                print(f"🗑️ Meddelande {msg_id[:8]}... raderat (FIFO kö, pos {deleted_count})")
+            else:
+                # Första meddelandet är inte klart än, avbryt
+                # (meddelanden efter kommer inte heller vara klara)
+                break
         
-        for msg_id in to_delete:
-            msg = self._messages.pop(msg_id, None)
-            if msg and self._on_message_deleted:
-                await self._on_message_deleted(msg_id, msg.sender_id, msg.receiver_id)
-                print(f"🗑️  Meddelande {msg_id[:8]}... raderat automatiskt")
+        if deleted_count > 0:
+            print(f"📊 Raderade {deleted_count} meddelanden från FIFO-kö")
     
     async def _check_inactive_users(self):
         """Kontrollera och uppdatera inaktiva användare"""
@@ -134,7 +159,8 @@ class MessageStore:
             message_type=message_type,
             status=MessageStatus.SENT,
             created_at=datetime.utcnow(),
-            char_count=char_count
+            char_count=char_count,
+            queue_position=None  # Sätts när meddelandet läses
         )
         
         self._messages[msg.id] = msg
@@ -164,25 +190,103 @@ class MessageStore:
         return False
     
     def mark_as_read(self, message_id: str) -> Optional[Message]:
-        """Markera meddelande som läst och starta raderingstimer"""
+        """
+        🆕 Markera meddelande som läst och lägg till i FIFO deletion queue
+        """
         msg = self._messages.get(message_id)
         if msg and msg.status in [MessageStatus.SENT, MessageStatus.DELIVERED]:
             msg.status = MessageStatus.READ
             msg.read_at = datetime.utcnow()
-            msg.delete_at = self.calculate_delete_time(msg.char_count)
-            msg.status = MessageStatus.PENDING_DELETE
             
-            time_until_delete = (msg.delete_at - datetime.utcnow()).total_seconds()
-            print(f"👁️  Meddelande {message_id[:8]}... läst, raderas om {time_until_delete:.1f}s")
+            # Beräkna när det ska raderas
+            msg.delete_at = self.calculate_delete_time(msg.char_count)
+            
+            # Lägg till i FIFO-kön
+            if message_id not in self._deletion_queue:
+                self._deletion_queue.append(message_id)
+                msg.queue_position = len(self._deletion_queue)
+                msg.status = MessageStatus.PENDING_DELETE
+                
+                time_until_delete = (msg.delete_at - datetime.utcnow()).total_seconds()
+                print(f"👁️ Meddelande {message_id[:8]}... läst, kö pos #{msg.queue_position}, raderas om {time_until_delete:.1f}s")
+            
             return msg
         return None
+    
+    def delete_message(self, message_id: str, deleted_by: int) -> Optional[dict]:
+        """
+        🆕 Radera ett meddelande manuellt
+        Användare kan bara radera sina egna meddelanden
+        """
+        msg = self._messages.get(message_id)
+        if not msg:
+            return {"error": "Message not found"}
+        
+        # Kontrollera behörighet (endast avsändaren kan radera)
+        if msg.sender_id != deleted_by:
+            return {"error": "You can only delete your own messages"}
+        
+        # Ta bort från kö om den finns där
+        if message_id in self._deletion_queue:
+            self._deletion_queue.remove(message_id)
+        
+        # Radera meddelandet
+        self._messages.pop(message_id, None)
+        
+        print(f"🗑️ Meddelande {message_id[:8]}... raderat manuellt av user {deleted_by}")
+        
+        return {
+            "success": True,
+            "message_id": message_id,
+            "deleted_by": deleted_by,
+            "deleted_at": datetime.utcnow().isoformat()
+        }
+    
+    def edit_message(self, message_id: str, new_content: str, edited_by: int) -> Optional[dict]:
+        """
+        🆕 Redigera ett meddelande
+        Användare kan bara redigera sina egna meddelanden
+        """
+        msg = self._messages.get(message_id)
+        if not msg:
+            return {"error": "Message not found"}
+        
+        # Kontrollera behörighet
+        if msg.sender_id != edited_by:
+            return {"error": "You can only edit your own messages"}
+        
+        # Kryptera nya innehållet
+        new_char_count = len(new_content)
+        encrypted_data = encryption.encrypt_message(new_content)
+        
+        # Uppdatera meddelandet
+        msg.content = EncryptedContent(**encrypted_data)
+        msg.char_count = new_char_count
+        msg.is_edited = True
+        msg.edited_at = datetime.utcnow()
+        msg.status = MessageStatus.EDITED
+        
+        # Om meddelandet är i deletion queue, uppdatera delete_at
+        if message_id in self._deletion_queue and msg.read_at:
+            msg.delete_at = self.calculate_delete_time(new_char_count)
+        
+        print(f"✏️ Meddelande {message_id[:8]}... redigerat av user {edited_by}")
+        
+        return {
+            "success": True,
+            "message_id": message_id,
+            "new_content": new_content,  # Dekrypterat för respons
+            "edited_by": edited_by,
+            "edited_at": msg.edited_at.isoformat(),
+            "new_char_count": new_char_count
+        }
     
     def get_messages_for_user(self, user_id: int) -> List[dict]:
         """Hämta alla meddelanden för en användare (DEKRYPTERADE)"""
         messages = []
         for msg in self._messages.values():
             if msg.sender_id == user_id or msg.receiver_id == user_id:
-                # ✅ FIXAT: Dekryptera innehållet innan vi returnerar
+                # Dekryptera innehållet innan vi returnerar
                 decrypted_content = encryption.decrypt_message({
                     "encrypted": msg.content.encrypted,
                     "salt": msg.content.salt
@@ -193,12 +297,15 @@ class MessageStore:
                     "sender_id": msg.sender_id,
                     "sender_name": USERS.get(msg.sender_id, {}).get("name", "unknown"),
                     "receiver_id": msg.receiver_id,
-                    "content": decrypted_content,  # ✅ Dekrypterat innehåll
+                    "content": decrypted_content,
                     "message_type": msg.message_type.value,
                     "status": msg.status.value,
                     "created_at": msg.created_at.isoformat(),
                     "char_count": msg.char_count,
-                    "delete_at": msg.delete_at.isoformat() if msg.delete_at else None
+                    "delete_at": msg.delete_at.isoformat() if msg.delete_at else None,
+                    "is_edited": msg.is_edited,
+                    "edited_at": msg.edited_at.isoformat() if msg.edited_at else None,
+                    "queue_position": msg.queue_position
                 })
         return messages
     
@@ -213,6 +320,7 @@ class MessageStore:
         """Radera alla meddelanden. Returnerar antal raderade."""
         count = len(self._messages)
         self._messages.clear()
+        self._deletion_queue.clear()  # 🆕 Rensa även kön
         print(f"🧹 Alla {count} meddelanden raderade")
         return count
     
@@ -289,6 +397,7 @@ class MessageStore:
         return {
             "total_messages": len(self._messages),
             "active_sessions": self.get_active_session_count(),
+            "deletion_queue_length": len(self._deletion_queue),
             "sessions": {
                 uid: {
                     "name": s.user_name,

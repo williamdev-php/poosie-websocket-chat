@@ -44,11 +44,17 @@ class CleanupScheduler:
         files_to_clean = [
             config.SESSIONS_FILE,
             config.TRUSTED_FILE,
-            config.ONBOARDING_FILE
+            config.ONBOARDING_FILE,
+            "data/login_control.json"  # 🆕 Lägg till login control fil (OBS: RENSA INTE DENNA!)
         ]
         
         cleaned_count = 0
         for filepath in files_to_clean:
+            # 🆕 SKIPPA login_control.json - vi vill behålla den!
+            if "login_control" in filepath:
+                print(f"   ⏭️ Behåller: {filepath} (login control)")
+                continue
+            
             if os.path.exists(filepath):
                 try:
                     # Rensa innehållet (skriv tom lista/dict beroende på fil)
@@ -87,7 +93,7 @@ class CleanupScheduler:
     def start(self):
         """Starta schemaläggaren"""
         if self.is_running:
-            print("⚠️  Cleanup scheduler redan igång")
+            print("⚠️ Cleanup scheduler redan igång")
             return
         
         # Schemalägg daglig cleanup kl 05:00

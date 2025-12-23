@@ -15,6 +15,7 @@ class MessageStatus(str, Enum):
     DELIVERED = "delivered"
     READ = "read"
     PENDING_DELETE = "pending_delete"
+    EDITED = "edited"  # 🆕 För redigerade meddelanden
 
 class UserStatus(str, Enum):
     ONLINE = "online"
@@ -43,6 +44,9 @@ class Message(BaseModel):
     read_at: Optional[datetime] = None
     delete_at: Optional[datetime] = None
     char_count: int = 0  # För att beräkna raderingstid
+    edited_at: Optional[datetime] = None  # 🆕 När meddelandet redigerades
+    is_edited: bool = False  # 🆕 Flagga för redigerat
+    queue_position: Optional[int] = None  # 🆕 Position i raderingskön
 
 class UserSession(BaseModel):
     user_id: int
@@ -68,8 +72,12 @@ class WebSocketMessage(BaseModel):
         "user_disconnected", # Användare frånkopplad
         "message_deleted",   # Meddelande raderat
         "session_full",      # Sessionen är full
-        "security_breach",   # 🚨 NYTT: Säkerhetsbrist (dubbel inloggning)
-        "duplicate_connection"  # 🚨 NYTT: Duplicate WebSocket connection
+        "security_breach",   # 🚨 Säkerhetsbrist (dubbel inloggning)
+        "duplicate_connection",  # 🚨 Duplicate WebSocket connection
+        "delete_message",    # 🆕 Radera meddelande manuellt
+        "edit_message",      # 🆕 Redigera meddelande
+        "message_edited",    # 🆕 Meddelande redigerat (notifiering)
+        "force_logout"       # 🆕 Tvångsutloggning (admin stängde av login)
     ]
     data: dict
 
@@ -84,6 +92,8 @@ class OutgoingMessage(BaseModel):
     status: MessageStatus
     created_at: str
     char_count: int
+    is_edited: bool = False  # 🆕
+    edited_at: Optional[str] = None  # 🆕
 
 # JWT Models
 class TokenPayload(BaseModel):

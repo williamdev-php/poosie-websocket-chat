@@ -19,6 +19,7 @@ from session_tracker import tracker, DeviceStatus
 from last_seen_store import last_seen_store
 from cleanup_tasks import cleanup_scheduler
 from session_manager import active_session_manager
+from login_control import login_control  # 🆕 Ny import
 
 # Aktiva WebSocket-anslutningar
 active_connections: Dict[int, WebSocket] = {}
@@ -42,12 +43,12 @@ def create_access_token(user_id: int) -> tuple[str, str]:
     
     payload = {
         "user_id": user_id,
-        "jti": jti,  # JWT Token ID för att identifiera denna specifika token
+        "jti": jti,
         "exp": expires
     }
     token = jwt.encode(payload, config.JWT_SECRET, algorithm=config.JWT_ALGORITHM)
     
-    # ✅ FIXAT: Registrera sessionen med JTI (inte token!)
+    # Registrera sessionen med JTI (inte token!)
     active_session_manager.create_session(user_id, jti)
     
     return token, jti
@@ -66,7 +67,7 @@ def verify_token(token: str) -> Optional[int]:
             return None
         
         if not jti:
-            print("⚠️  Token saknar JTI")
+            print("⚠️ Token saknar JTI")
             return None
         
         # Kontrollera att detta är den aktiva sessionen för användaren
@@ -77,10 +78,10 @@ def verify_token(token: str) -> Optional[int]:
         return user_id
         
     except jwt.ExpiredSignatureError:
-        print("⚠️  Token har gått ut")
+        print("⚠️ Token har gått ut")
         return None
     except jwt.InvalidTokenError:
-        print("⚠️  Ogiltig token")
+        print("⚠️ Ogiltig token")
         return None
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> int:
@@ -149,7 +150,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Private WebSocket Chat (Secure)",
     description="End-to-end encrypted chat for 2 users with JWT auth",
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan
 )
 
@@ -184,56 +185,64 @@ def verify_api_token(authorization: str = Header(None)) -> bool:
     return tracker.verify_token(authorization)
 
 # ============ AUTH ENDPOINTS ============
+
 @app.post("/api/auth/login", response_model=TokenResponse)
 async def login(request: Request, login_data: LoginRequest):
     """
-    Login endpoint - genererar JWT token.
-    Om användaren redan är ansluten via WebSocket:
-    1. Rensa alla meddelanden
-    2. Skicka security breach till gamla anslutningen
-    3. Stäng gamla anslutningen
-    4. Skapa ny session
+    🆕 Login endpoint med login control check
     """
     user_id = login_data.user_id
     
     if user_id not in USERS:
         raise HTTPException(status_code=401, detail="Ogiltig användare")
     
-    # Logga session
+    # Hämta IP och user agent
     user_agent = request.headers.get("user-agent", "unknown")
     ip_address = get_client_ip(request)
     
+    # 🆕 KONTROLLERA OM LOGIN ÄR TILLÅTEN
+    allowed, reason = login_control.is_login_allowed(user_id)
+    
+    if not allowed:
+        # 🆕 SILENT REJECTION - Logga försöket men skicka inget token
+        login_control.log_attempt(user_id, ip_address, user_agent, success=False, reason=reason)
+        
+        # Returnera 401 utan att avslöja varför
+        raise HTTPException(status_code=401, detail="Login misslyckades")
+    
+    # Logga session (endast för user 1)
     if user_id == 1:
         tracker.log_session(user_id, ip_address, user_agent)
         tracker.increment_login_count(user_id)
     
-    # 🚨 KRITISKT: Kolla om användaren redan är ansluten
+    # Kolla om användaren redan är ansluten
     is_already_connected = user_id in active_connections
     
     if is_already_connected:
         print(f"🚨 SÄKERHETSBRIST: Användare {user_id} försöker logga in medan redan ansluten!")
         
-        # 1. Rensa alla meddelanden FÖRST (innan någon ny anslutning)
+        # Rensa alla meddelanden FÖRST
         cleared_count = store.clear_all_messages()
         print(f"🧹 Rensade {cleared_count} meddelanden pga dubbel inloggning")
         
-        # 2. Skicka security breach till gamla anslutningen
+        # Skicka security breach till gamla anslutningen
         await close_existing_connection(user_id, reason="security_breach")
         
-        # 3. Vänta lite extra så gamla anslutningen hinner stängas
+        # Vänta lite extra så gamla anslutningen hinner stängas
         await asyncio.sleep(1)
     
-    # Skapa token (invaliderar automatiskt gamla sessioner)
+    # Skapa token
     token, jti = create_access_token(user_id)
+    
+    # 🆕 Logga framgångsrikt försök
+    login_control.log_attempt(user_id, ip_address, user_agent, success=True)
     
     print(f"✅ Användare {user_id} inloggad från {ip_address} (JTI: {jti[:8]}...)")
     
-    # Returnera med flagga om det var dubbel inloggning
     return TokenResponse(
         access_token=token,
         token_type="bearer",
         expires_in=config.JWT_EXPIRATION_HOURS * 3600,
-        # Lägg till extra data i response (behöver uppdatera TokenResponse model)
     )
 
 @app.post("/api/auth/verify")
@@ -247,17 +256,74 @@ async def verify_auth(user_id: int = Depends(get_current_user)):
 
 @app.post("/api/auth/logout")
 async def logout(user_id: int = Depends(get_current_user)):
-    """
-    Logga ut och invalidera session.
-    Detta gör att token inte längre är giltig.
-    """
+    """Logga ut och invalidera session"""
     active_session_manager.invalidate_session(user_id)
-    
     print(f"👋 Användare {user_id} loggade ut")
     
     return {
         "success": True,
         "message": "Utloggad"
+    }
+
+# ============ 🆕 LOGIN CONTROL ENDPOINTS ============
+
+@app.get("/api/login-control/status")
+async def get_login_control_status(authorization: str = Header(None)):
+    """Hämta login control status (endast för user 2)"""
+    if not verify_api_token(authorization):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    return login_control.get_status()
+
+@app.post("/api/login-control/toggle")
+async def toggle_login_control(
+    request: Request,
+    authorization: str = Header(None)
+):
+    """
+    Toggle login för user_id 1 (endast user 2 kan göra detta)
+    Accepterar både JWT token OCH API token
+    """
+    # Försök först med JWT token
+    user_id = None
+    if authorization and authorization.startswith('Bearer '):
+        token = authorization.replace('Bearer ', '')
+        
+        # Försök verifiera som JWT
+        user_id = verify_token(token)
+        
+        # Om inte JWT, kolla om det är API token
+        if not user_id and tracker.verify_token(token):
+            user_id = 2  # API token = user 2 access
+    
+    if not user_id or user_id != 2:
+        raise HTTPException(
+            status_code=403, 
+            detail="Only user 2 can control login access"
+        )
+    
+    body = await request.json()
+    enabled = body.get("enabled", True)
+    
+    result = login_control.toggle_user_1_login(enabled, modified_by=user_id)
+    
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    
+    return result
+
+@app.get("/api/login-control/attempts")
+async def get_login_attempts(
+    authorization: str = Header(None),
+    limit: int = 20
+):
+    """Hämta senaste login attempts (endast för user 2)"""
+    if not verify_api_token(authorization):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    return {
+        "attempts": login_control.get_recent_attempts(limit),
+        "total": len(login_control.get_recent_attempts(1000))
     }
 
 # ============ LAST SEEN ENDPOINTS ============
@@ -269,8 +335,6 @@ async def get_last_seen(user_id: int):
         raise HTTPException(status_code=404, detail="Användare hittades inte")
     
     data = last_seen_store.get_last_seen(user_id, decrypt=False)
-    
-    # Kolla om användaren är online just nu
     is_online = user_id in active_connections
     
     if not data:
@@ -466,7 +530,7 @@ async def handle_chat_message(user_id: int, data: dict):
         message_type=msg_type
     )
     
-    # ✅ FIXAT: Dekryptera innehållet innan vi skickar till klienter
+    # Dekryptera innehållet innan vi skickar till klienter
     decrypted_content = encryption.decrypt_message({
         "encrypted": msg.content.encrypted,
         "salt": msg.content.salt
@@ -479,7 +543,7 @@ async def handle_chat_message(user_id: int, data: dict):
             "sender_id": msg.sender_id,
             "sender_name": USERS[msg.sender_id]["name"],
             "receiver_id": msg.receiver_id,
-            "content": decrypted_content,  # ✅ Skicka dekrypterat
+            "content": decrypted_content,
             "message_type": msg.message_type.value,
             "status": msg.status.value,
             "created_at": msg.created_at.isoformat(),
@@ -507,10 +571,71 @@ async def handle_message_read(user_id: int, data: dict):
             "data": {
                 "message_id": message_id,
                 "read_at": msg.read_at.isoformat() if msg.read_at else None,
-                "delete_at": msg.delete_at.isoformat() if msg.delete_at else None
+                "delete_at": msg.delete_at.isoformat() if msg.delete_at else None,
+                "queue_position": msg.queue_position
             }
         }
         await broadcast_to_other(user_id, notification)
+
+async def handle_delete_message(user_id: int, data: dict):
+    """🆕 Hantera manuell radering av meddelande"""
+    message_id = data.get("message_id")
+    if not message_id:
+        return
+    
+    result = store.delete_message(message_id, deleted_by=user_id)
+    
+    if "error" in result:
+        await send_to_user(user_id, {
+            "type": "error",
+            "data": {"message": result["error"]}
+        })
+        return
+    
+    # Notifiera båda användare
+    notification = {
+        "type": "message_deleted",
+        "data": {
+            "message_id": message_id,
+            "deleted_by": user_id,
+            "deleted_at": result["deleted_at"]
+        }
+    }
+    
+    for uid in list(active_connections.keys()):
+        await send_to_user(uid, notification)
+
+async def handle_edit_message(user_id: int, data: dict):
+    """🆕 Hantera redigering av meddelande"""
+    message_id = data.get("message_id")
+    new_content = data.get("new_content", "")
+    
+    if not message_id or not new_content:
+        return
+    
+    result = store.edit_message(message_id, new_content, edited_by=user_id)
+    
+    if "error" in result:
+        await send_to_user(user_id, {
+            "type": "error",
+            "data": {"message": result["error"]}
+        })
+        return
+    
+    # Notifiera båda användare
+    notification = {
+        "type": "message_edited",
+        "data": {
+            "message_id": message_id,
+            "new_content": result["new_content"],
+            "edited_by": user_id,
+            "edited_at": result["edited_at"],
+            "new_char_count": result["new_char_count"]
+        }
+    }
+    
+    for uid in list(active_connections.keys()):
+        await send_to_user(uid, notification)
 
 async def handle_typing(user_id: int, is_typing: bool):
     """Hantera skrivindikator"""
@@ -539,13 +664,10 @@ async def handle_tab_visibility(user_id: int, data: dict):
     })
 
 async def handle_clear_all(user_id: int):
-    """
-    Hantera rensning av alla meddelanden.
-    Invaliderar också sessionen så användaren måste logga in igen.
-    """
+    """Hantera rensning av alla meddelanden"""
     count = store.clear_all_messages()
     
-    # Invalidera sessionen - användaren måste logga in igen
+    # Invalidera sessionen
     active_session_manager.invalidate_session(user_id)
     
     notification = {
@@ -554,7 +676,7 @@ async def handle_clear_all(user_id: int):
             "cleared_by": user_id,
             "cleared_by_name": USERS[user_id]["name"],
             "count": count,
-            "session_invalidated": True  # Informera frontend att logga ut
+            "session_invalidated": True
         }
     }
     
@@ -572,11 +694,10 @@ async def handle_heartbeat(user_id: int):
     })
 
 async def close_existing_connection(user_id: int, reason: str = "new_connection"):
-    """Stäng befintlig anslutning för en användare med security breach notis"""
+    """Stäng befintlig anslutning för en användare"""
     if user_id in active_connections:
         old_ws = active_connections[user_id]
         try:
-            # Skicka security breach varning till den gamla anslutningen
             if reason == "security_breach":
                 await old_ws.send_json({
                     "type": "security_breach",
@@ -585,27 +706,23 @@ async def close_existing_connection(user_id: int, reason: str = "new_connection"
                         "reason": "Någon försöker logga in på ditt konto samtidigt som du är inloggad"
                     }
                 })
-                # Vänta lite så meddelandet hinner fram
                 await asyncio.sleep(0.5)
             
             await old_ws.close(code=4001, reason=reason)
         except Exception as e:
             print(f"⚠️ Kunde inte stänga gamla anslutningen: {e}")
         
-        # Ta bort från active
         del active_connections[user_id]
         store.remove_session(user_id)
         print(f"🔄 Stängde gammal anslutning för användare {user_id} (reason: {reason})")
+
 @app.websocket("/ws/{token}")
 async def websocket_endpoint(websocket: WebSocket, token: str):
-    """
-    Huvudsaklig WebSocket endpoint med JWT-autentisering och security breach detektion.
-    """
+    """Huvudsaklig WebSocket endpoint"""
     
     # Verifiera token OCH att sessionen är aktiv
     user_id = verify_token(token)
     if not user_id:
-        # 🚨 KRITISKT: Måste acceptera först innan vi kan stänga med custom code!
         await websocket.accept()
         await websocket.send_json({
             "type": "error",
@@ -615,14 +732,11 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
         print(f"⛔ WebSocket rejected - session invaliderad eller token utgången")
         return
     
-    # 🔒 SÄKERHETSKONTROLL: Kolla om användaren redan är ansluten
+    # Säkerhetskontroll: Kolla om användaren redan är ansluten
     if user_id in active_connections:
         print(f"🚨 WebSocket security breach detected för användare {user_id}")
         
-        # Acceptera tillfälligt för att skicka meddelande
         await websocket.accept()
-        
-        # Informera om security breach (denna är den NYA anslutningen)
         await websocket.send_json({
             "type": "duplicate_connection",
             "data": {
@@ -631,7 +745,6 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             }
         })
         
-        # Stäng direkt
         await websocket.close(code=4002, reason="Duplicate connection detected")
         return
     
@@ -696,6 +809,10 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                     await handle_chat_message(user_id, data)
                 elif msg_type == "message_read":
                     await handle_message_read(user_id, data)
+                elif msg_type == "delete_message":  # 🆕
+                    await handle_delete_message(user_id, data)
+                elif msg_type == "edit_message":  # 🆕
+                    await handle_edit_message(user_id, data)
                 elif msg_type == "typing":
                     await handle_typing(user_id, True)
                 elif msg_type == "stop_typing":
@@ -727,7 +844,6 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             del active_connections[user_id]
             store.remove_session(user_id)
             
-            # Uppdatera last seen vid frånkoppling
             last_seen_store.update_last_seen(user_id, ip_address, user_agent)
             
             print(f"👋 Användare {USERS[user_id]['name']} (ID: {user_id}) frånkopplad")
@@ -747,7 +863,7 @@ async def root():
     return {
         "status": "ok",
         "service": "WebSocket Chat Server (Secure)",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "environment": config.ENVIRONMENT.value,
         "ssl_enabled": config.USE_SSL,
         "active_connections": list(active_connections.keys())
@@ -777,7 +893,7 @@ async def get_users():
         "max_sessions": 2
     }
 
-# ============ MANUAL CLEANUP ENDPOINT (För testning) ============
+# ============ ADMIN ENDPOINTS ============
 
 @app.post("/api/admin/cleanup")
 async def manual_cleanup(authorization: str = Header(None)):
@@ -799,7 +915,6 @@ async def invalidate_user_session(user_id: int, authorization: str = Header(None
     
     active_session_manager.invalidate_session(user_id)
     
-    # Stäng även WebSocket-anslutningen om den finns
     if user_id in active_connections:
         try:
             await active_connections[user_id].close(code=4001, reason="Session invalidated by admin")
@@ -814,8 +929,6 @@ async def invalidate_user_session(user_id: int, authorization: str = Header(None
 if __name__ == "__main__":
     import uvicorn
     
-    # Railway/Cloudflare hanterar SSL - kör vanlig HTTP lokalt
-    # Railway's proxy lägger automatiskt på HTTPS
     uvicorn.run(
         app,
         host=config.HOST,

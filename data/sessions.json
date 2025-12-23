@@ -152,5 +152,38 @@
     "device_type": "desktop",
     "timestamp": "2025-12-20T17:16:42.642070",
     "fingerprint": "3e588aca16d3ed0c"
+  },
+  {
+    "id": "sess_20251223145614_3e588aca",
+    "user_id": 1,
+    "ip_address": "127.0.0.1",
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "browser": "Chrome",
+    "os": "Linux",
+    "device_type": "desktop",
+    "timestamp": "2025-12-23T14:56:14.064520",
+    "fingerprint": "3e588aca16d3ed0c"
+  },
+  {
+    "id": "sess_20251223152333_0e694728",
+    "user_id": 1,
+    "ip_address": "127.0.0.1",
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "browser": "Chrome",
+    "os": "Linux",
+    "device_type": "desktop",
+    "timestamp": "2025-12-23T15:23:33.783828",
+    "fingerprint": "0e694728e63139bd"
+  },
+  {
+    "id": "sess_20251223153012_0e694728",
+    "user_id": 1,
+    "ip_address": "127.0.0.1",
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "browser": "Chrome",
+    "os": "Linux",
+    "device_type": "desktop",
+    "timestamp": "2025-12-23T15:30:12.764405",
+    "fingerprint": "0e694728e63139bd"
   }
 ]
